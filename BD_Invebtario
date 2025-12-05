@@ -1,0 +1,1981 @@
+--
+-- PostgreSQL database dump
+--
+
+\restrict mrAWa4UqshVII7cbPYb3Lsd9xcKvgqJ8GBCgcFLs8dq09nbivbgy2txHCDVedf4
+
+-- Dumped from database version 18.1
+-- Dumped by pg_dump version 18.1
+
+-- Started on 2025-12-04 12:40:17
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 256 (class 1255 OID 18116)
+-- Name: audit_trigger_fn(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.audit_trigger_fn() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE
+    pk_col TEXT;
+    pk_val TEXT;
+    excluded_cols TEXT[] := ARRAY['updated_at', 'created_at', 'created_by', 'updated_by', 'deleted_at'];
+    old_row JSONB;
+    new_row JSONB;
+BEGIN
+    SELECT a.attname INTO pk_col
+    FROM pg_index i
+    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+    WHERE i.indrelid = TG_RELID AND i.indisprimary;
+
+    EXECUTE format('SELECT ($1).%I::text', pk_col) INTO pk_val USING COALESCE(OLD, NEW);
+
+    IF TG_OP = 'UPDATE' THEN
+        old_row := to_jsonb(OLD) - excluded_cols;
+        new_row := to_jsonb(NEW) - excluded_cols;
+        IF new_row IS DISTINCT FROM old_row THEN
+            INSERT INTO audit_logs (table_name, record_id, action, old_values, new_values, changed_by, changed_at)
+            VALUES (TG_TABLE_NAME, pk_val, 'UPDATE', old_row, new_row, current_setting('app.current_user', true)::int, NOW());
+        END IF;
+        RETURN NEW;
+    ELSIF TG_OP = 'DELETE' THEN
+        old_row := to_jsonb(OLD) - excluded_cols;
+        INSERT INTO audit_logs (table_name, record_id, action, old_values, changed_by, changed_at)
+        VALUES (TG_TABLE_NAME, pk_val, 'DELETE', old_row, current_setting('app.current_user', true)::int, NOW());
+        RETURN OLD;
+    ELSIF TG_OP = 'INSERT' THEN
+        new_row := to_jsonb(NEW) - excluded_cols;
+        INSERT INTO audit_logs (table_name, record_id, action, new_values, changed_by, changed_at)
+        VALUES (TG_TABLE_NAME, pk_val, 'INSERT', new_row, current_setting('app.current_user', true)::int, NOW());
+        RETURN NEW;
+    END IF;
+END;
+$_$;
+
+
+ALTER FUNCTION public.audit_trigger_fn() OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 230 (class 1259 OID 17955)
+-- Name: asset_assignments; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.asset_assignments (
+    id integer NOT NULL,
+    asset_id integer NOT NULL,
+    user_id integer NOT NULL,
+    assigned_date date NOT NULL,
+    expected_return_date date,
+    return_date date,
+    status character varying(20) DEFAULT 'active'::character varying,
+    notes text,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    CONSTRAINT asset_assignments_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'returned'::character varying])::text[]))),
+    CONSTRAINT chk_dates_order CHECK ((assigned_date <= expected_return_date))
+);
+
+
+ALTER TABLE public.asset_assignments OWNER TO postgres;
+
+--
+-- TOC entry 229 (class 1259 OID 17954)
+-- Name: asset_assignments_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.asset_assignments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.asset_assignments_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5166 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: asset_assignments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.asset_assignments_id_seq OWNED BY public.asset_assignments.id;
+
+
+--
+-- TOC entry 234 (class 1259 OID 18043)
+-- Name: asset_moves; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.asset_moves (
+    id integer NOT NULL,
+    asset_id integer NOT NULL,
+    from_location_id integer,
+    to_location_id integer,
+    moved_by integer,
+    move_date date DEFAULT CURRENT_DATE NOT NULL,
+    reason text,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer NOT NULL
+);
+
+
+ALTER TABLE public.asset_moves OWNER TO postgres;
+
+--
+-- TOC entry 233 (class 1259 OID 18042)
+-- Name: asset_moves_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.asset_moves_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.asset_moves_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5167 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: asset_moves_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.asset_moves_id_seq OWNED BY public.asset_moves.id;
+
+
+--
+-- TOC entry 228 (class 1259 OID 17893)
+-- Name: assets; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.assets (
+    id integer NOT NULL,
+    category_id integer NOT NULL,
+    location_id integer NOT NULL,
+    supplier_id integer,
+    asset_tag character varying(50) NOT NULL,
+    serial_number character varying(100),
+    name character varying(200) NOT NULL,
+    brand character varying(100),
+    model character varying(100),
+    acquisition_date date NOT NULL,
+    acquisition_value numeric(10,2) NOT NULL,
+    useful_life_months integer DEFAULT 60 NOT NULL,
+    residual_value numeric(10,2) DEFAULT 0 NOT NULL,
+    status character varying(20) NOT NULL,
+    condition character varying(20) NOT NULL,
+    specs jsonb DEFAULT '{}'::jsonb,
+    notes text,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    warranty_expiry_date date,
+    invoice_number character varying(50),
+    purchase_order_number character varying(50),
+    CONSTRAINT assets_acquisition_value_check CHECK ((acquisition_value >= (0)::numeric)),
+    CONSTRAINT assets_condition_check CHECK (((condition)::text = ANY ((ARRAY['new'::character varying, 'good'::character varying, 'fair'::character varying, 'poor'::character varying, 'broken'::character varying])::text[]))),
+    CONSTRAINT assets_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'stored'::character varying, 'disposed'::character varying, 'stolen'::character varying, 'under_repair'::character varying])::text[]))),
+    CONSTRAINT assets_useful_life_months_check CHECK (((useful_life_months >= 12) AND (useful_life_months <= 300))),
+    CONSTRAINT chk_acquisition_not_future CHECK ((acquisition_date <= CURRENT_DATE))
+);
+
+
+ALTER TABLE public.assets OWNER TO postgres;
+
+--
+-- TOC entry 5168 (class 0 OID 0)
+-- Dependencies: 228
+-- Name: COLUMN assets.warranty_expiry_date; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.assets.warranty_expiry_date IS 'Fecha de vencimiento de la garantía del fabricante';
+
+
+--
+-- TOC entry 5169 (class 0 OID 0)
+-- Dependencies: 228
+-- Name: COLUMN assets.invoice_number; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN public.assets.invoice_number IS 'Número de factura de compra';
+
+
+--
+-- TOC entry 227 (class 1259 OID 17892)
+-- Name: assets_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.assets_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.assets_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5170 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: assets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.assets_id_seq OWNED BY public.assets.id;
+
+
+--
+-- TOC entry 236 (class 1259 OID 18084)
+-- Name: audit_logs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.audit_logs (
+    id bigint NOT NULL,
+    table_name text NOT NULL,
+    record_id text NOT NULL,
+    action text NOT NULL,
+    old_values jsonb,
+    new_values jsonb,
+    changed_by integer,
+    changed_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT audit_logs_action_check CHECK ((action = ANY (ARRAY['INSERT'::text, 'UPDATE'::text, 'DELETE'::text])))
+);
+
+
+ALTER TABLE public.audit_logs OWNER TO postgres;
+
+--
+-- TOC entry 235 (class 1259 OID 18083)
+-- Name: audit_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.audit_logs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.audit_logs_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5171 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: audit_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.audit_logs_id_seq OWNED BY public.audit_logs.id;
+
+
+--
+-- TOC entry 224 (class 1259 OID 17835)
+-- Name: categories; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.categories (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    parent_id integer,
+    active boolean DEFAULT true NOT NULL,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    CONSTRAINT chk_no_self_parent CHECK ((parent_id <> id))
+);
+
+
+ALTER TABLE public.categories OWNER TO postgres;
+
+--
+-- TOC entry 223 (class 1259 OID 17834)
+-- Name: categories_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.categories_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.categories_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5172 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: categories_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.categories_id_seq OWNED BY public.categories.id;
+
+
+--
+-- TOC entry 242 (class 1259 OID 18237)
+-- Name: consumables; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.consumables (
+    id integer NOT NULL,
+    name character varying(200) NOT NULL,
+    category_id integer,
+    quantity_in_stock integer DEFAULT 0,
+    min_quantity integer DEFAULT 5,
+    location_id integer,
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now(),
+    created_by integer
+);
+
+
+ALTER TABLE public.consumables OWNER TO postgres;
+
+--
+-- TOC entry 241 (class 1259 OID 18236)
+-- Name: consumables_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.consumables_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.consumables_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5173 (class 0 OID 0)
+-- Dependencies: 241
+-- Name: consumables_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.consumables_id_seq OWNED BY public.consumables.id;
+
+
+--
+-- TOC entry 244 (class 1259 OID 18260)
+-- Name: documents; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.documents (
+    id integer NOT NULL,
+    entity_type character varying(50) NOT NULL,
+    entity_id integer NOT NULL,
+    file_url text NOT NULL,
+    file_type character varying(50),
+    description text,
+    uploaded_at timestamp without time zone DEFAULT now(),
+    uploaded_by integer,
+    created_by integer
+);
+
+
+ALTER TABLE public.documents OWNER TO postgres;
+
+--
+-- TOC entry 243 (class 1259 OID 18259)
+-- Name: documents_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.documents_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.documents_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5174 (class 0 OID 0)
+-- Dependencies: 243
+-- Name: documents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.documents_id_seq OWNED BY public.documents.id;
+
+
+--
+-- TOC entry 240 (class 1259 OID 18210)
+-- Name: license_assignments; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.license_assignments (
+    id integer NOT NULL,
+    license_id integer NOT NULL,
+    asset_id integer,
+    user_id integer,
+    assigned_date date DEFAULT CURRENT_DATE,
+    created_at timestamp without time zone DEFAULT now(),
+    created_by integer,
+    CONSTRAINT chk_license_target CHECK ((((asset_id IS NOT NULL) AND (user_id IS NULL)) OR ((asset_id IS NULL) AND (user_id IS NOT NULL))))
+);
+
+
+ALTER TABLE public.license_assignments OWNER TO postgres;
+
+--
+-- TOC entry 239 (class 1259 OID 18209)
+-- Name: license_assignments_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.license_assignments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.license_assignments_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5175 (class 0 OID 0)
+-- Dependencies: 239
+-- Name: license_assignments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.license_assignments_id_seq OWNED BY public.license_assignments.id;
+
+
+--
+-- TOC entry 222 (class 1259 OID 17804)
+-- Name: locations; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.locations (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    code character varying(20) NOT NULL,
+    address character varying(255),
+    city character varying(100) NOT NULL,
+    country character varying(2) DEFAULT 'MX'::character varying NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer
+);
+
+
+ALTER TABLE public.locations OWNER TO postgres;
+
+--
+-- TOC entry 221 (class 1259 OID 17803)
+-- Name: locations_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.locations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.locations_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5176 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: locations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.locations_id_seq OWNED BY public.locations.id;
+
+
+--
+-- TOC entry 232 (class 1259 OID 17996)
+-- Name: maintenance_orders; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.maintenance_orders (
+    id integer NOT NULL,
+    asset_id integer NOT NULL,
+    type character varying(20) NOT NULL,
+    status character varying(20) DEFAULT 'scheduled'::character varying,
+    planned_date date NOT NULL,
+    start_date timestamp without time zone,
+    end_date timestamp without time zone,
+    cost_parts numeric(10,2) DEFAULT 0,
+    cost_labor numeric(10,2) DEFAULT 0,
+    technician_id integer,
+    notes text,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    CONSTRAINT chk_end_after_start CHECK (((end_date IS NULL) OR (start_date IS NULL) OR (end_date >= start_date))),
+    CONSTRAINT chk_planned_date_logic CHECK (((planned_date >= CURRENT_DATE) OR ((status)::text = 'completed'::text))),
+    CONSTRAINT maintenance_orders_cost_labor_check CHECK ((cost_labor >= (0)::numeric)),
+    CONSTRAINT maintenance_orders_cost_parts_check CHECK ((cost_parts >= (0)::numeric)),
+    CONSTRAINT maintenance_orders_status_check CHECK (((status)::text = ANY ((ARRAY['scheduled'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[]))),
+    CONSTRAINT maintenance_orders_type_check CHECK (((type)::text = ANY ((ARRAY['preventive'::character varying, 'corrective'::character varying, 'upgrade'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.maintenance_orders OWNER TO postgres;
+
+--
+-- TOC entry 231 (class 1259 OID 17995)
+-- Name: maintenance_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.maintenance_orders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.maintenance_orders_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5177 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: maintenance_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.maintenance_orders_id_seq OWNED BY public.maintenance_orders.id;
+
+
+--
+-- TOC entry 238 (class 1259 OID 18187)
+-- Name: software_licenses; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.software_licenses (
+    id integer NOT NULL,
+    name character varying(200) NOT NULL,
+    key character varying(255),
+    type character varying(50) NOT NULL,
+    seats_total integer DEFAULT 1,
+    seats_used integer DEFAULT 0,
+    expiration_date date,
+    supplier_id integer,
+    cost numeric(10,2) DEFAULT 0,
+    notes text,
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now(),
+    created_by integer,
+    CONSTRAINT software_licenses_type_check CHECK (((type)::text = ANY ((ARRAY['volume'::character varying, 'single'::character varying, 'subscription'::character varying, 'free'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.software_licenses OWNER TO postgres;
+
+--
+-- TOC entry 237 (class 1259 OID 18186)
+-- Name: software_licenses_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.software_licenses_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.software_licenses_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5178 (class 0 OID 0)
+-- Dependencies: 237
+-- Name: software_licenses_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.software_licenses_id_seq OWNED BY public.software_licenses.id;
+
+
+--
+-- TOC entry 226 (class 1259 OID 17866)
+-- Name: suppliers; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.suppliers (
+    id integer NOT NULL,
+    name character varying(200) NOT NULL,
+    tax_id character varying(50),
+    email character varying(150),
+    phone character varying(20),
+    contact_person character varying(100),
+    active boolean DEFAULT true NOT NULL,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    address text,
+    website character varying(255),
+    support_phone character varying(50),
+    support_email character varying(150)
+);
+
+
+ALTER TABLE public.suppliers OWNER TO postgres;
+
+--
+-- TOC entry 225 (class 1259 OID 17865)
+-- Name: suppliers_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.suppliers_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.suppliers_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5179 (class 0 OID 0)
+-- Dependencies: 225
+-- Name: suppliers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.suppliers_id_seq OWNED BY public.suppliers.id;
+
+
+--
+-- TOC entry 220 (class 1259 OID 17767)
+-- Name: users; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    full_name character varying(150) NOT NULL,
+    email character varying(150) NOT NULL,
+    employee_id character varying(50),
+    department character varying(100) NOT NULL,
+    job_title character varying(100) NOT NULL,
+    role character varying(20) DEFAULT 'viewer'::character varying NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    deleted_at timestamp without time zone,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    created_by integer,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_by integer,
+    CONSTRAINT users_role_check CHECK (((role)::text = ANY ((ARRAY['admin'::character varying, 'manager'::character varying, 'operator'::character varying, 'viewer'::character varying])::text[])))
+);
+
+
+ALTER TABLE public.users OWNER TO postgres;
+
+--
+-- TOC entry 219 (class 1259 OID 17766)
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.users_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.users_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5180 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
+
+
+--
+-- TOC entry 4840 (class 2604 OID 17958)
+-- Name: asset_assignments id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments ALTER COLUMN id SET DEFAULT nextval('public.asset_assignments_id_seq'::regclass);
+
+
+--
+-- TOC entry 4850 (class 2604 OID 18046)
+-- Name: asset_moves id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves ALTER COLUMN id SET DEFAULT nextval('public.asset_moves_id_seq'::regclass);
+
+
+--
+-- TOC entry 4834 (class 2604 OID 17896)
+-- Name: assets id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets ALTER COLUMN id SET DEFAULT nextval('public.assets_id_seq'::regclass);
+
+
+--
+-- TOC entry 4853 (class 2604 OID 18087)
+-- Name: audit_logs id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.audit_logs ALTER COLUMN id SET DEFAULT nextval('public.audit_logs_id_seq'::regclass);
+
+
+--
+-- TOC entry 4826 (class 2604 OID 17838)
+-- Name: categories id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.categories ALTER COLUMN id SET DEFAULT nextval('public.categories_id_seq'::regclass);
+
+
+--
+-- TOC entry 4864 (class 2604 OID 18240)
+-- Name: consumables id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.consumables ALTER COLUMN id SET DEFAULT nextval('public.consumables_id_seq'::regclass);
+
+
+--
+-- TOC entry 4869 (class 2604 OID 18263)
+-- Name: documents id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.documents ALTER COLUMN id SET DEFAULT nextval('public.documents_id_seq'::regclass);
+
+
+--
+-- TOC entry 4861 (class 2604 OID 18213)
+-- Name: license_assignments id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments ALTER COLUMN id SET DEFAULT nextval('public.license_assignments_id_seq'::regclass);
+
+
+--
+-- TOC entry 4821 (class 2604 OID 17807)
+-- Name: locations id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.locations ALTER COLUMN id SET DEFAULT nextval('public.locations_id_seq'::regclass);
+
+
+--
+-- TOC entry 4844 (class 2604 OID 17999)
+-- Name: maintenance_orders id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders ALTER COLUMN id SET DEFAULT nextval('public.maintenance_orders_id_seq'::regclass);
+
+
+--
+-- TOC entry 4855 (class 2604 OID 18190)
+-- Name: software_licenses id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.software_licenses ALTER COLUMN id SET DEFAULT nextval('public.software_licenses_id_seq'::regclass);
+
+
+--
+-- TOC entry 4830 (class 2604 OID 17869)
+-- Name: suppliers id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suppliers ALTER COLUMN id SET DEFAULT nextval('public.suppliers_id_seq'::regclass);
+
+
+--
+-- TOC entry 4816 (class 2604 OID 17770)
+-- Name: users id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
+
+
+--
+-- TOC entry 5146 (class 0 OID 17955)
+-- Dependencies: 230
+-- Data for Name: asset_assignments; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.asset_assignments (id, asset_id, user_id, assigned_date, expected_return_date, return_date, status, notes, deleted_at, created_at, created_by, updated_at, updated_by) FROM stdin;
+1	1	1	2025-01-15	2025-12-31	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+2	2	2	2025-02-01	2025-11-30	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+3	3	3	2025-03-01	2025-10-31	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+4	4	4	2025-01-20	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+5	5	5	2025-02-15	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+6	6	6	2025-03-01	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+7	7	7	2025-03-10	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+8	8	8	2025-03-15	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+9	9	9	2025-03-20	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+10	10	10	2025-03-25	\N	\N	active	\N	\N	2025-12-04 10:07:41.802429	1	2025-12-04 10:07:41.802429	\N
+\.
+
+
+--
+-- TOC entry 5150 (class 0 OID 18043)
+-- Dependencies: 234
+-- Data for Name: asset_moves; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.asset_moves (id, asset_id, from_location_id, to_location_id, moved_by, move_date, reason, deleted_at, created_at, created_by) FROM stdin;
+1	1	1	2	1	2025-04-01	Cambio de sucursal por proyecto	\N	2025-12-04 10:10:25.090541	1
+2	2	1	3	1	2025-05-10	Temporal almacén por reforma	\N	2025-12-04 10:10:25.090541	1
+3	3	2	1	1	2025-06-15	Retorno a oficina central	\N	2025-12-04 10:10:25.090541	1
+4	4	1	2	1	2025-07-01	Nueva área de diseño	\N	2025-12-04 10:10:25.090541	1
+5	5	1	2	1	2025-07-01	Acompaña a monitor 1	\N	2025-12-04 10:10:25.090541	1
+6	6	1	3	1	2025-08-01	Almacén por falta de espacio	\N	2025-12-04 10:10:25.090541	1
+7	7	1	2	1	2025-08-15	Mudanza a área de ventas	\N	2025-12-04 10:10:25.090541	1
+8	8	2	1	1	2025-09-01	Retorno por reorganización	\N	2025-12-04 10:10:25.090541	1
+9	9	1	2	1	2025-09-10	Nueva sede temporal	\N	2025-12-04 10:10:25.090541	1
+10	10	1	3	1	2025-09-20	Almacén por mantenimiento	\N	2025-12-04 10:10:25.090541	1
+\.
+
+
+--
+-- TOC entry 5144 (class 0 OID 17893)
+-- Dependencies: 228
+-- Data for Name: assets; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.assets (id, category_id, location_id, supplier_id, asset_tag, serial_number, name, brand, model, acquisition_date, acquisition_value, useful_life_months, residual_value, status, condition, specs, notes, deleted_at, created_at, created_by, updated_at, updated_by, warranty_expiry_date, invoice_number, purchase_order_number) FROM stdin;
+1	2	1	1	LAP-001	SN123456789	Laptop Dell Latitude 5420	Dell	Latitude 5420	2024-01-15	1200.00	60	0.00	active	good	{"cpu": "i5-1145G7", "ram": "16GB", "storage": "512GB SSD"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+2	2	1	1	LAP-002	SN987654321	Laptop HP ProBook 450	HP	ProBook 450	2024-02-10	1100.00	60	0.00	active	good	{"cpu": "i5-1135G7", "ram": "8GB", "storage": "256GB SSD"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+3	3	1	1	MON-001	SN554433221	Monitor Dell 24" Full HD	Dell	P2422H	2024-01-20	250.00	60	0.00	active	new	{"size": "24\\"", "resolution": "1920x1080"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+4	3	1	1	MON-002	SN665544332	Monitor HP 27" 4K	HP	Z27	2024-02-15	450.00	60	0.00	active	new	{"size": "27\\"", "resolution": "3840x2160"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+5	4	1	1	MOU-001	SN776655443	Mouse Logitech MX Master 3	Logitech	MX Master 3	2024-03-01	80.00	60	0.00	active	new	{"dpi": "4000", "type": "inalambrico"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+6	4	1	1	TEC-001	SN887766554	Teclado Mecanico Keychron K2	Keychron	K2	2024-03-10	90.00	60	0.00	active	new	{"type": "mecanico", "layout": "ES"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+7	6	1	2	SIL-001	SN998877665	Silla Ergonomica Alta	ErgoSit	Pro-100	2024-01-25	300.00	60	0.00	active	good	{"color": "negro", "material": "malla"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+8	6	2	2	SIL-002	SN889977665	Silla Ejecutiva de Cuero	OfiLux	Lux-200	2024-02-20	450.00	60	0.00	active	new	{"color": "marron", "material": "cuero"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+9	7	1	2	ESC-001	SN778899001	Escritorio Electrico 1.20m	SitStand	Elec-120	2024-03-15	550.00	60	0.00	active	new	{"width": "1.20m", "height": "ajustable"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+10	9	1	3	RUT-001	SN990011223	Router Empresarial TP-Link	TP-Link	TL-ER5120	2024-03-20	200.00	60	0.00	active	new	{"ports": "5", "speed": "1 Gbps"}	\N	\N	2025-12-04 10:06:31.093334	1	2025-12-04 10:06:31.093334	\N	\N	\N	\N
+\.
+
+
+--
+-- TOC entry 5152 (class 0 OID 18084)
+-- Dependencies: 236
+-- Data for Name: audit_logs; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.audit_logs (id, table_name, record_id, action, old_values, new_values, changed_by, changed_at) FROM stdin;
+1	users	1	INSERT	\N	{"id": 1, "role": "admin", "email": "ana.lopez@empresa.com", "active": true, "full_name": "Ana López", "job_title": "Jefe de TI", "department": "TI", "employee_id": "EMP001"}	\N	2025-12-04 09:59:52.693902
+2	users	2	INSERT	\N	{"id": 2, "role": "operator", "email": "carlos.ruiz@empresa.com", "active": true, "full_name": "Carlos Ruiz", "job_title": "Tecnico de Soporte", "department": "TI", "employee_id": "EMP002"}	\N	2025-12-04 10:00:47.975075
+3	users	3	INSERT	\N	{"id": 3, "role": "viewer", "email": "maria.gonzalez@empresa.com", "active": true, "full_name": "Maria Gonzalez", "job_title": "Analista RRHH", "department": "Recursos Humanos", "employee_id": "EMP003"}	\N	2025-12-04 10:00:47.975075
+4	users	4	INSERT	\N	{"id": 4, "role": "viewer", "email": "luis.martinez@empresa.com", "active": true, "full_name": "Luis Martinez", "job_title": "Contador", "department": "Contabilidad", "employee_id": "EMP004"}	\N	2025-12-04 10:00:47.975075
+5	users	5	INSERT	\N	{"id": 5, "role": "viewer", "email": "sofia.herrera@empresa.com", "active": true, "full_name": "Sofia Herrera", "job_title": "Comprador", "department": "Compras", "employee_id": "EMP005"}	\N	2025-12-04 10:00:47.975075
+6	users	6	INSERT	\N	{"id": 6, "role": "operator", "email": "jorge.perez@empresa.com", "active": true, "full_name": "Jorge Perez", "job_title": "Ingeniero de Software", "department": "TI", "employee_id": "EMP006"}	\N	2025-12-04 10:00:47.975075
+7	users	7	INSERT	\N	{"id": 7, "role": "manager", "email": "laura.soto@empresa.com", "active": true, "full_name": "Laura Soto", "job_title": "Coordinadora RH", "department": "Recursos Humanos", "employee_id": "EMP007"}	\N	2025-12-04 10:00:47.975075
+8	users	8	INSERT	\N	{"id": 8, "role": "operator", "email": "miguel.castro@empresa.com", "active": true, "full_name": "Miguel Castro", "job_title": "Tecnico de Campo", "department": "TI", "employee_id": "EMP008"}	\N	2025-12-04 10:00:47.975075
+9	users	9	INSERT	\N	{"id": 9, "role": "viewer", "email": "claudia.ramirez@empresa.com", "active": true, "full_name": "Claudia Ramirez", "job_title": "Auxiliar de Compras", "department": "Compras", "employee_id": "EMP009"}	\N	2025-12-04 10:00:47.975075
+10	users	10	INSERT	\N	{"id": 10, "role": "viewer", "email": "diego.morales@empresa.com", "active": true, "full_name": "Diego Morales", "job_title": "Asistente Contable", "department": "Contabilidad", "employee_id": "EMP010"}	\N	2025-12-04 10:00:47.975075
+11	locations	1	INSERT	\N	{"id": 1, "city": "Ciudad de Mexico", "code": "OC01", "name": "Oficina Central", "active": true, "address": "Av. Principal 123", "country": "MX"}	\N	2025-12-04 10:02:33.426022
+12	locations	2	INSERT	\N	{"id": 2, "city": "Monterrey", "code": "SN01", "name": "Sucursal Norte", "active": true, "address": "Calle Norte 456", "country": "MX"}	\N	2025-12-04 10:02:33.426022
+13	locations	3	INSERT	\N	{"id": 3, "city": "Guadalajara", "code": "SS01", "name": "Sucursal Sur", "active": true, "address": "Blvd. Sur 789", "country": "MX"}	\N	2025-12-04 10:02:33.426022
+14	locations	4	INSERT	\N	{"id": 4, "city": "Ciudad de Mexico", "code": "AC01", "name": "Almacen Central", "active": true, "address": "Av. Logistica 100", "country": "MX"}	\N	2025-12-04 10:02:33.426022
+15	locations	5	INSERT	\N	{"id": 5, "city": "Ciudad de Mexico", "code": "SJ01", "name": "Sala de Juntas", "active": true, "address": "Edificio Principal, Piso 2", "country": "MX"}	\N	2025-12-04 10:02:33.426022
+16	categories	1	INSERT	\N	{"id": 1, "name": "Equipos de Computo", "active": true, "parent_id": null}	\N	2025-12-04 10:03:40.101954
+17	categories	2	INSERT	\N	{"id": 2, "name": "Laptops", "active": true, "parent_id": 1}	\N	2025-12-04 10:03:40.101954
+18	categories	3	INSERT	\N	{"id": 3, "name": "Monitores", "active": true, "parent_id": 1}	\N	2025-12-04 10:03:40.101954
+19	categories	4	INSERT	\N	{"id": 4, "name": "Perifericos", "active": true, "parent_id": 1}	\N	2025-12-04 10:03:40.101954
+20	categories	5	INSERT	\N	{"id": 5, "name": "Muebles de Oficina", "active": true, "parent_id": null}	\N	2025-12-04 10:03:40.101954
+21	categories	6	INSERT	\N	{"id": 6, "name": "Sillas", "active": true, "parent_id": 5}	\N	2025-12-04 10:03:40.101954
+22	categories	7	INSERT	\N	{"id": 7, "name": "Escritorios", "active": true, "parent_id": 5}	\N	2025-12-04 10:03:40.101954
+23	categories	8	INSERT	\N	{"id": 8, "name": "Redes y Conectividad", "active": true, "parent_id": null}	\N	2025-12-04 10:03:40.101954
+24	categories	9	INSERT	\N	{"id": 9, "name": "Routers", "active": true, "parent_id": 8}	\N	2025-12-04 10:03:40.101954
+25	categories	10	INSERT	\N	{"id": 10, "name": "Cables y Adaptadores", "active": true, "parent_id": 8}	\N	2025-12-04 10:03:40.101954
+26	suppliers	1	INSERT	\N	{"id": 1, "name": "TecnoSoluciones S.A.", "email": "ventas@tecnosoluciones.com", "phone": null, "active": true, "tax_id": "TSO123456", "contact_person": "Jorge Perez"}	\N	2025-12-04 10:04:59.39147
+27	suppliers	2	INSERT	\N	{"id": 2, "name": "Muebles Modernos Ltda.", "email": "contacto@mueblesmodernos.com", "phone": null, "active": true, "tax_id": "MML789012", "contact_person": "Laura Soto"}	\N	2025-12-04 10:04:59.39147
+28	suppliers	3	INSERT	\N	{"id": 3, "name": "Redes y Mas", "email": "info@redesymas.com", "phone": null, "active": true, "tax_id": "RYM345678", "contact_person": "Miguel Castro"}	\N	2025-12-04 10:04:59.39147
+29	suppliers	4	INSERT	\N	{"id": 4, "name": "Equipos de Oficina S.A.", "email": "ventas@equiposdeoficina.com", "phone": null, "active": true, "tax_id": "EOS901234", "contact_person": "Claudia Ramirez"}	\N	2025-12-04 10:04:59.39147
+30	suppliers	5	INSERT	\N	{"id": 5, "name": "Cables y Conectividad", "email": "ventas@cablesyconectividad.com", "phone": null, "active": true, "tax_id": "CYC567890", "contact_person": "Diego Morales"}	\N	2025-12-04 10:04:59.39147
+31	assets	1	INSERT	\N	{"id": 1, "name": "Laptop Dell Latitude 5420", "brand": "Dell", "model": "Latitude 5420", "notes": null, "specs": {"cpu": "i5-1145G7", "ram": "16GB", "storage": "512GB SSD"}, "status": "active", "asset_tag": "LAP-001", "condition": "good", "category_id": 2, "location_id": 1, "supplier_id": 1, "serial_number": "SN123456789", "residual_value": 0.00, "acquisition_date": "2024-01-15", "acquisition_value": 1200.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+32	assets	2	INSERT	\N	{"id": 2, "name": "Laptop HP ProBook 450", "brand": "HP", "model": "ProBook 450", "notes": null, "specs": {"cpu": "i5-1135G7", "ram": "8GB", "storage": "256GB SSD"}, "status": "active", "asset_tag": "LAP-002", "condition": "good", "category_id": 2, "location_id": 1, "supplier_id": 1, "serial_number": "SN987654321", "residual_value": 0.00, "acquisition_date": "2024-02-10", "acquisition_value": 1100.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+54	maintenance_orders	4	INSERT	\N	{"id": 4, "type": "preventive", "notes": null, "status": "completed", "asset_id": 4, "end_date": null, "cost_labor": 30.00, "cost_parts": 0.00, "start_date": null, "planned_date": "2025-11-24", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+33	assets	3	INSERT	\N	{"id": 3, "name": "Monitor Dell 24\\" Full HD", "brand": "Dell", "model": "P2422H", "notes": null, "specs": {"size": "24\\"", "resolution": "1920x1080"}, "status": "active", "asset_tag": "MON-001", "condition": "new", "category_id": 3, "location_id": 1, "supplier_id": 1, "serial_number": "SN554433221", "residual_value": 0.00, "acquisition_date": "2024-01-20", "acquisition_value": 250.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+34	assets	4	INSERT	\N	{"id": 4, "name": "Monitor HP 27\\" 4K", "brand": "HP", "model": "Z27", "notes": null, "specs": {"size": "27\\"", "resolution": "3840x2160"}, "status": "active", "asset_tag": "MON-002", "condition": "new", "category_id": 3, "location_id": 1, "supplier_id": 1, "serial_number": "SN665544332", "residual_value": 0.00, "acquisition_date": "2024-02-15", "acquisition_value": 450.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+35	assets	5	INSERT	\N	{"id": 5, "name": "Mouse Logitech MX Master 3", "brand": "Logitech", "model": "MX Master 3", "notes": null, "specs": {"dpi": "4000", "type": "inalambrico"}, "status": "active", "asset_tag": "MOU-001", "condition": "new", "category_id": 4, "location_id": 1, "supplier_id": 1, "serial_number": "SN776655443", "residual_value": 0.00, "acquisition_date": "2024-03-01", "acquisition_value": 80.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+36	assets	6	INSERT	\N	{"id": 6, "name": "Teclado Mecanico Keychron K2", "brand": "Keychron", "model": "K2", "notes": null, "specs": {"type": "mecanico", "layout": "ES"}, "status": "active", "asset_tag": "TEC-001", "condition": "new", "category_id": 4, "location_id": 1, "supplier_id": 1, "serial_number": "SN887766554", "residual_value": 0.00, "acquisition_date": "2024-03-10", "acquisition_value": 90.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+37	assets	7	INSERT	\N	{"id": 7, "name": "Silla Ergonomica Alta", "brand": "ErgoSit", "model": "Pro-100", "notes": null, "specs": {"color": "negro", "material": "malla"}, "status": "active", "asset_tag": "SIL-001", "condition": "good", "category_id": 6, "location_id": 1, "supplier_id": 2, "serial_number": "SN998877665", "residual_value": 0.00, "acquisition_date": "2024-01-25", "acquisition_value": 300.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+38	assets	8	INSERT	\N	{"id": 8, "name": "Silla Ejecutiva de Cuero", "brand": "OfiLux", "model": "Lux-200", "notes": null, "specs": {"color": "marron", "material": "cuero"}, "status": "active", "asset_tag": "SIL-002", "condition": "new", "category_id": 6, "location_id": 2, "supplier_id": 2, "serial_number": "SN889977665", "residual_value": 0.00, "acquisition_date": "2024-02-20", "acquisition_value": 450.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+39	assets	9	INSERT	\N	{"id": 9, "name": "Escritorio Electrico 1.20m", "brand": "SitStand", "model": "Elec-120", "notes": null, "specs": {"width": "1.20m", "height": "ajustable"}, "status": "active", "asset_tag": "ESC-001", "condition": "new", "category_id": 7, "location_id": 1, "supplier_id": 2, "serial_number": "SN778899001", "residual_value": 0.00, "acquisition_date": "2024-03-15", "acquisition_value": 550.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+40	assets	10	INSERT	\N	{"id": 10, "name": "Router Empresarial TP-Link", "brand": "TP-Link", "model": "TL-ER5120", "notes": null, "specs": {"ports": "5", "speed": "1 Gbps"}, "status": "active", "asset_tag": "RUT-001", "condition": "new", "category_id": 9, "location_id": 1, "supplier_id": 3, "serial_number": "SN990011223", "residual_value": 0.00, "acquisition_date": "2024-03-20", "acquisition_value": 200.00, "useful_life_months": 60}	\N	2025-12-04 10:06:31.093334
+41	asset_assignments	1	INSERT	\N	{"id": 1, "notes": null, "status": "active", "user_id": 1, "asset_id": 1, "return_date": null, "assigned_date": "2025-01-15", "expected_return_date": "2025-12-31"}	\N	2025-12-04 10:07:41.802429
+42	asset_assignments	2	INSERT	\N	{"id": 2, "notes": null, "status": "active", "user_id": 2, "asset_id": 2, "return_date": null, "assigned_date": "2025-02-01", "expected_return_date": "2025-11-30"}	\N	2025-12-04 10:07:41.802429
+43	asset_assignments	3	INSERT	\N	{"id": 3, "notes": null, "status": "active", "user_id": 3, "asset_id": 3, "return_date": null, "assigned_date": "2025-03-01", "expected_return_date": "2025-10-31"}	\N	2025-12-04 10:07:41.802429
+44	asset_assignments	4	INSERT	\N	{"id": 4, "notes": null, "status": "active", "user_id": 4, "asset_id": 4, "return_date": null, "assigned_date": "2025-01-20", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+45	asset_assignments	5	INSERT	\N	{"id": 5, "notes": null, "status": "active", "user_id": 5, "asset_id": 5, "return_date": null, "assigned_date": "2025-02-15", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+46	asset_assignments	6	INSERT	\N	{"id": 6, "notes": null, "status": "active", "user_id": 6, "asset_id": 6, "return_date": null, "assigned_date": "2025-03-01", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+47	asset_assignments	7	INSERT	\N	{"id": 7, "notes": null, "status": "active", "user_id": 7, "asset_id": 7, "return_date": null, "assigned_date": "2025-03-10", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+48	asset_assignments	8	INSERT	\N	{"id": 8, "notes": null, "status": "active", "user_id": 8, "asset_id": 8, "return_date": null, "assigned_date": "2025-03-15", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+49	asset_assignments	9	INSERT	\N	{"id": 9, "notes": null, "status": "active", "user_id": 9, "asset_id": 9, "return_date": null, "assigned_date": "2025-03-20", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+50	asset_assignments	10	INSERT	\N	{"id": 10, "notes": null, "status": "active", "user_id": 10, "asset_id": 10, "return_date": null, "assigned_date": "2025-03-25", "expected_return_date": null}	\N	2025-12-04 10:07:41.802429
+51	maintenance_orders	1	INSERT	\N	{"id": 1, "type": "preventive", "notes": null, "status": "scheduled", "asset_id": 1, "end_date": null, "cost_labor": 50.00, "cost_parts": 0.00, "start_date": null, "planned_date": "2025-12-11", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+52	maintenance_orders	2	INSERT	\N	{"id": 2, "type": "preventive", "notes": null, "status": "in_progress", "asset_id": 2, "end_date": null, "cost_labor": 60.00, "cost_parts": 25.00, "start_date": null, "planned_date": "2025-12-12", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+53	maintenance_orders	3	INSERT	\N	{"id": 3, "type": "corrective", "notes": null, "status": "scheduled", "asset_id": 3, "end_date": null, "cost_labor": 80.00, "cost_parts": 120.00, "start_date": null, "planned_date": "2025-12-13", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+55	maintenance_orders	5	INSERT	\N	{"id": 5, "type": "upgrade", "notes": null, "status": "scheduled", "asset_id": 5, "end_date": null, "cost_labor": 100.00, "cost_parts": 200.00, "start_date": null, "planned_date": "2026-01-03", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+56	maintenance_orders	6	INSERT	\N	{"id": 6, "type": "preventive", "notes": null, "status": "scheduled", "asset_id": 6, "end_date": null, "cost_labor": 40.00, "cost_parts": 0.00, "start_date": null, "planned_date": "2025-12-24", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+57	maintenance_orders	7	INSERT	\N	{"id": 7, "type": "preventive", "notes": null, "status": "scheduled", "asset_id": 7, "end_date": null, "cost_labor": 60.00, "cost_parts": 0.00, "start_date": null, "planned_date": "2025-12-29", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+58	maintenance_orders	8	INSERT	\N	{"id": 8, "type": "corrective", "notes": null, "status": "scheduled", "asset_id": 8, "end_date": null, "cost_labor": 70.00, "cost_parts": 80.00, "start_date": null, "planned_date": "2025-12-19", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+59	maintenance_orders	9	INSERT	\N	{"id": 9, "type": "preventive", "notes": null, "status": "scheduled", "asset_id": 9, "end_date": null, "cost_labor": 40.00, "cost_parts": 50.00, "start_date": null, "planned_date": "2026-01-13", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+60	maintenance_orders	10	INSERT	\N	{"id": 10, "type": "upgrade", "notes": null, "status": "scheduled", "asset_id": 10, "end_date": null, "cost_labor": 150.00, "cost_parts": 300.00, "start_date": null, "planned_date": "2026-02-02", "technician_id": 2}	\N	2025-12-04 10:09:11.754341
+61	asset_moves	1	INSERT	\N	{"id": 1, "reason": "Cambio de sucursal por proyecto", "asset_id": 1, "moved_by": 1, "move_date": "2025-04-01", "to_location_id": 2, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+62	asset_moves	2	INSERT	\N	{"id": 2, "reason": "Temporal almacén por reforma", "asset_id": 2, "moved_by": 1, "move_date": "2025-05-10", "to_location_id": 3, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+63	asset_moves	3	INSERT	\N	{"id": 3, "reason": "Retorno a oficina central", "asset_id": 3, "moved_by": 1, "move_date": "2025-06-15", "to_location_id": 1, "from_location_id": 2}	\N	2025-12-04 10:10:25.090541
+64	asset_moves	4	INSERT	\N	{"id": 4, "reason": "Nueva área de diseño", "asset_id": 4, "moved_by": 1, "move_date": "2025-07-01", "to_location_id": 2, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+65	asset_moves	5	INSERT	\N	{"id": 5, "reason": "Acompaña a monitor 1", "asset_id": 5, "moved_by": 1, "move_date": "2025-07-01", "to_location_id": 2, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+66	asset_moves	6	INSERT	\N	{"id": 6, "reason": "Almacén por falta de espacio", "asset_id": 6, "moved_by": 1, "move_date": "2025-08-01", "to_location_id": 3, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+67	asset_moves	7	INSERT	\N	{"id": 7, "reason": "Mudanza a área de ventas", "asset_id": 7, "moved_by": 1, "move_date": "2025-08-15", "to_location_id": 2, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+68	asset_moves	8	INSERT	\N	{"id": 8, "reason": "Retorno por reorganización", "asset_id": 8, "moved_by": 1, "move_date": "2025-09-01", "to_location_id": 1, "from_location_id": 2}	\N	2025-12-04 10:10:25.090541
+69	asset_moves	9	INSERT	\N	{"id": 9, "reason": "Nueva sede temporal", "asset_id": 9, "moved_by": 1, "move_date": "2025-09-10", "to_location_id": 2, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+70	asset_moves	10	INSERT	\N	{"id": 10, "reason": "Almacén por mantenimiento", "asset_id": 10, "moved_by": 1, "move_date": "2025-09-20", "to_location_id": 3, "from_location_id": 1}	\N	2025-12-04 10:10:25.090541
+71	software_licenses	1	INSERT	\N	{"id": 1, "key": "XXXXX-XXXXX-XXXXX-XXXXX", "cost": 1500.00, "name": "Windows 11 Pro", "type": "volume", "notes": "Licencia corporativa Windows 11", "seats_used": 8, "seats_total": 10, "supplier_id": 1, "expiration_date": "2026-01-15"}	\N	2025-12-04 12:32:35.656569
+72	software_licenses	2	INSERT	\N	{"id": 2, "key": "YYYYY-YYYYY-YYYYY-YYYYY", "cost": 1200.00, "name": "Office 2021", "type": "volume", "notes": "Office para laptops corporativas", "seats_used": 12, "seats_total": 15, "supplier_id": 1, "expiration_date": "2025-12-31"}	\N	2025-12-04 12:32:35.656569
+73	software_licenses	3	INSERT	\N	{"id": 3, "key": "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", "cost": 600.00, "name": "Adobe Acrobat Pro", "type": "subscription", "notes": "PDF editor para área de diseño", "seats_used": 3, "seats_total": 5, "supplier_id": 2, "expiration_date": "2025-09-30"}	\N	2025-12-04 12:32:35.656569
+74	software_licenses	4	INSERT	\N	{"id": 4, "key": "AAAAA-AAAAA-AAAAA-AAAAA", "cost": 800.00, "name": "Zoom Pro", "type": "subscription", "notes": "Videoconferencias para todo el personal", "seats_used": 18, "seats_total": 20, "supplier_id": 3, "expiration_date": "2025-11-30"}	\N	2025-12-04 12:32:35.656569
+75	software_licenses	5	INSERT	\N	{"id": 5, "key": "BBBBB-BBBBB-BBBBB-BBBBB", "cost": 2500.00, "name": "AutoCAD 2024", "type": "single", "notes": "Licencia individual para diseñador", "seats_used": 1, "seats_total": 1, "supplier_id": 2, "expiration_date": "2026-06-30"}	\N	2025-12-04 12:32:35.656569
+76	license_assignments	1	INSERT	\N	{"id": 1, "user_id": null, "asset_id": 1, "license_id": 1, "assigned_date": "2025-01-15"}	\N	2025-12-04 12:33:33.87049
+77	license_assignments	2	INSERT	\N	{"id": 2, "user_id": 1, "asset_id": null, "license_id": 2, "assigned_date": "2025-01-20"}	\N	2025-12-04 12:33:33.87049
+78	license_assignments	3	INSERT	\N	{"id": 3, "user_id": null, "asset_id": 4, "license_id": 3, "assigned_date": "2025-02-01"}	\N	2025-12-04 12:33:33.87049
+79	license_assignments	4	INSERT	\N	{"id": 4, "user_id": 3, "asset_id": null, "license_id": 4, "assigned_date": "2025-02-10"}	\N	2025-12-04 12:33:33.87049
+80	license_assignments	5	INSERT	\N	{"id": 5, "user_id": 6, "asset_id": null, "license_id": 5, "assigned_date": "2025-03-01"}	\N	2025-12-04 12:33:33.87049
+81	consumables	1	INSERT	\N	{"id": 1, "name": "Toner HP 64A Negro", "category_id": 4, "location_id": 1, "min_quantity": 5, "quantity_in_stock": 15}	\N	2025-12-04 12:36:15.667073
+82	consumables	2	INSERT	\N	{"id": 2, "name": "Mouse Logitech M185", "category_id": 4, "location_id": 1, "min_quantity": 3, "quantity_in_stock": 8}	\N	2025-12-04 12:36:15.667073
+83	consumables	3	INSERT	\N	{"id": 3, "name": "Cable HDMI 2m", "category_id": 10, "location_id": 1, "min_quantity": 10, "quantity_in_stock": 25}	\N	2025-12-04 12:36:15.667073
+84	consumables	4	INSERT	\N	{"id": 4, "name": "Papel A4 500 hojas", "category_id": 10, "location_id": 1, "min_quantity": 20, "quantity_in_stock": 50}	\N	2025-12-04 12:36:15.667073
+85	consumables	5	INSERT	\N	{"id": 5, "name": "Teclado Logitech K120", "category_id": 4, "location_id": 1, "min_quantity": 5, "quantity_in_stock": 12}	\N	2025-12-04 12:36:15.667073
+86	documents	1	INSERT	\N	{"id": 1, "file_url": "https://empresa.com/docs/lap001-factura.pdf", "entity_id": 1, "file_type": "pdf", "description": "Factura de compra laptop LAP-001", "entity_type": "assets", "uploaded_at": "2025-12-04T12:36:27.617487", "uploaded_by": 1}	\N	2025-12-04 12:36:27.617487
+87	documents	2	INSERT	\N	{"id": 2, "file_url": "https://empresa.com/docs/mo003-manual.pdf", "entity_id": 3, "file_type": "pdf", "description": "Manual de mantenimiento MO-003", "entity_type": "maintenance_orders", "uploaded_at": "2025-12-04T12:36:27.617487", "uploaded_by": 1}	\N	2025-12-04 12:36:27.617487
+88	documents	3	INSERT	\N	{"id": 3, "file_url": "https://empresa.com/docs/mon002-garantia.pdf", "entity_id": 4, "file_type": "pdf", "description": "Garantía monitor MON-002", "entity_type": "assets", "uploaded_at": "2025-12-04T12:36:27.617487", "uploaded_by": 1}	\N	2025-12-04 12:36:27.617487
+89	documents	4	INSERT	\N	{"id": 4, "file_url": "https://empresa.com/docs/win11-licencia.pdf", "entity_id": 1, "file_type": "pdf", "description": "Licencia Windows 11 volumen", "entity_type": "software_licenses", "uploaded_at": "2025-12-04T12:36:27.617487", "uploaded_by": 1}	\N	2025-12-04 12:36:27.617487
+90	documents	5	INSERT	\N	{"id": 5, "file_url": "https://empresa.com/docs/hdmi2-foto.jpg", "entity_id": 3, "file_type": "jpg", "description": "Foto del cable HDMI 2m", "entity_type": "consumables", "uploaded_at": "2025-12-04T12:36:27.617487", "uploaded_by": 1}	\N	2025-12-04 12:36:27.617487
+\.
+
+
+--
+-- TOC entry 5140 (class 0 OID 17835)
+-- Dependencies: 224
+-- Data for Name: categories; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.categories (id, name, parent_id, active, deleted_at, created_at, created_by, updated_at, updated_by) FROM stdin;
+1	Equipos de Computo	\N	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+2	Laptops	1	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+3	Monitores	1	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+4	Perifericos	1	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+5	Muebles de Oficina	\N	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+6	Sillas	5	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+7	Escritorios	5	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+8	Redes y Conectividad	\N	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+9	Routers	8	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+10	Cables y Adaptadores	8	t	\N	2025-12-04 10:03:40.101954	1	2025-12-04 10:03:40.101954	\N
+\.
+
+
+--
+-- TOC entry 5158 (class 0 OID 18237)
+-- Dependencies: 242
+-- Data for Name: consumables; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.consumables (id, name, category_id, quantity_in_stock, min_quantity, location_id, created_at, updated_at, created_by) FROM stdin;
+1	Toner HP 64A Negro	4	15	5	1	2025-12-04 12:36:15.667073	2025-12-04 12:36:15.667073	1
+2	Mouse Logitech M185	4	8	3	1	2025-12-04 12:36:15.667073	2025-12-04 12:36:15.667073	1
+3	Cable HDMI 2m	10	25	10	1	2025-12-04 12:36:15.667073	2025-12-04 12:36:15.667073	1
+4	Papel A4 500 hojas	10	50	20	1	2025-12-04 12:36:15.667073	2025-12-04 12:36:15.667073	1
+5	Teclado Logitech K120	4	12	5	1	2025-12-04 12:36:15.667073	2025-12-04 12:36:15.667073	1
+\.
+
+
+--
+-- TOC entry 5160 (class 0 OID 18260)
+-- Dependencies: 244
+-- Data for Name: documents; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.documents (id, entity_type, entity_id, file_url, file_type, description, uploaded_at, uploaded_by, created_by) FROM stdin;
+1	assets	1	https://empresa.com/docs/lap001-factura.pdf	pdf	Factura de compra laptop LAP-001	2025-12-04 12:36:27.617487	1	\N
+2	maintenance_orders	3	https://empresa.com/docs/mo003-manual.pdf	pdf	Manual de mantenimiento MO-003	2025-12-04 12:36:27.617487	1	\N
+3	assets	4	https://empresa.com/docs/mon002-garantia.pdf	pdf	Garantía monitor MON-002	2025-12-04 12:36:27.617487	1	\N
+4	software_licenses	1	https://empresa.com/docs/win11-licencia.pdf	pdf	Licencia Windows 11 volumen	2025-12-04 12:36:27.617487	1	\N
+5	consumables	3	https://empresa.com/docs/hdmi2-foto.jpg	jpg	Foto del cable HDMI 2m	2025-12-04 12:36:27.617487	1	\N
+\.
+
+
+--
+-- TOC entry 5156 (class 0 OID 18210)
+-- Dependencies: 240
+-- Data for Name: license_assignments; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.license_assignments (id, license_id, asset_id, user_id, assigned_date, created_at, created_by) FROM stdin;
+1	1	1	\N	2025-01-15	2025-12-04 12:33:33.87049	1
+2	2	\N	1	2025-01-20	2025-12-04 12:33:33.87049	1
+3	3	4	\N	2025-02-01	2025-12-04 12:33:33.87049	1
+4	4	\N	3	2025-02-10	2025-12-04 12:33:33.87049	1
+5	5	\N	6	2025-03-01	2025-12-04 12:33:33.87049	1
+\.
+
+
+--
+-- TOC entry 5138 (class 0 OID 17804)
+-- Dependencies: 222
+-- Data for Name: locations; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.locations (id, name, code, address, city, country, active, deleted_at, created_at, created_by, updated_at, updated_by) FROM stdin;
+1	Oficina Central	OC01	Av. Principal 123	Ciudad de Mexico	MX	t	\N	2025-12-04 10:02:33.426022	1	2025-12-04 10:02:33.426022	\N
+2	Sucursal Norte	SN01	Calle Norte 456	Monterrey	MX	t	\N	2025-12-04 10:02:33.426022	1	2025-12-04 10:02:33.426022	\N
+3	Sucursal Sur	SS01	Blvd. Sur 789	Guadalajara	MX	t	\N	2025-12-04 10:02:33.426022	1	2025-12-04 10:02:33.426022	\N
+4	Almacen Central	AC01	Av. Logistica 100	Ciudad de Mexico	MX	t	\N	2025-12-04 10:02:33.426022	1	2025-12-04 10:02:33.426022	\N
+5	Sala de Juntas	SJ01	Edificio Principal, Piso 2	Ciudad de Mexico	MX	t	\N	2025-12-04 10:02:33.426022	1	2025-12-04 10:02:33.426022	\N
+\.
+
+
+--
+-- TOC entry 5148 (class 0 OID 17996)
+-- Dependencies: 232
+-- Data for Name: maintenance_orders; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.maintenance_orders (id, asset_id, type, status, planned_date, start_date, end_date, cost_parts, cost_labor, technician_id, notes, deleted_at, created_at, created_by, updated_at, updated_by) FROM stdin;
+1	1	preventive	scheduled	2025-12-11	\N	\N	0.00	50.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+2	2	preventive	in_progress	2025-12-12	\N	\N	25.00	60.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+3	3	corrective	scheduled	2025-12-13	\N	\N	120.00	80.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+4	4	preventive	completed	2025-11-24	\N	\N	0.00	30.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+5	5	upgrade	scheduled	2026-01-03	\N	\N	200.00	100.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+6	6	preventive	scheduled	2025-12-24	\N	\N	0.00	40.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+7	7	preventive	scheduled	2025-12-29	\N	\N	0.00	60.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+8	8	corrective	scheduled	2025-12-19	\N	\N	80.00	70.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+9	9	preventive	scheduled	2026-01-13	\N	\N	50.00	40.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+10	10	upgrade	scheduled	2026-02-02	\N	\N	300.00	150.00	2	\N	\N	2025-12-04 10:09:11.754341	1	2025-12-04 10:09:11.754341	\N
+\.
+
+
+--
+-- TOC entry 5154 (class 0 OID 18187)
+-- Dependencies: 238
+-- Data for Name: software_licenses; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.software_licenses (id, name, key, type, seats_total, seats_used, expiration_date, supplier_id, cost, notes, created_at, updated_at, created_by) FROM stdin;
+1	Windows 11 Pro	XXXXX-XXXXX-XXXXX-XXXXX	volume	10	8	2026-01-15	1	1500.00	Licencia corporativa Windows 11	2025-12-04 12:32:35.656569	2025-12-04 12:32:35.656569	1
+2	Office 2021	YYYYY-YYYYY-YYYYY-YYYYY	volume	15	12	2025-12-31	1	1200.00	Office para laptops corporativas	2025-12-04 12:32:35.656569	2025-12-04 12:32:35.656569	1
+3	Adobe Acrobat Pro	ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ	subscription	5	3	2025-09-30	2	600.00	PDF editor para área de diseño	2025-12-04 12:32:35.656569	2025-12-04 12:32:35.656569	1
+4	Zoom Pro	AAAAA-AAAAA-AAAAA-AAAAA	subscription	20	18	2025-11-30	3	800.00	Videoconferencias para todo el personal	2025-12-04 12:32:35.656569	2025-12-04 12:32:35.656569	1
+5	AutoCAD 2024	BBBBB-BBBBB-BBBBB-BBBBB	single	1	1	2026-06-30	2	2500.00	Licencia individual para diseñador	2025-12-04 12:32:35.656569	2025-12-04 12:32:35.656569	1
+\.
+
+
+--
+-- TOC entry 5142 (class 0 OID 17866)
+-- Dependencies: 226
+-- Data for Name: suppliers; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.suppliers (id, name, tax_id, email, phone, contact_person, active, deleted_at, created_at, created_by, updated_at, updated_by, address, website, support_phone, support_email) FROM stdin;
+1	TecnoSoluciones S.A.	TSO123456	ventas@tecnosoluciones.com	\N	Jorge Perez	t	\N	2025-12-04 10:04:59.39147	1	2025-12-04 10:04:59.39147	\N	\N	\N	\N	\N
+2	Muebles Modernos Ltda.	MML789012	contacto@mueblesmodernos.com	\N	Laura Soto	t	\N	2025-12-04 10:04:59.39147	1	2025-12-04 10:04:59.39147	\N	\N	\N	\N	\N
+3	Redes y Mas	RYM345678	info@redesymas.com	\N	Miguel Castro	t	\N	2025-12-04 10:04:59.39147	1	2025-12-04 10:04:59.39147	\N	\N	\N	\N	\N
+4	Equipos de Oficina S.A.	EOS901234	ventas@equiposdeoficina.com	\N	Claudia Ramirez	t	\N	2025-12-04 10:04:59.39147	1	2025-12-04 10:04:59.39147	\N	\N	\N	\N	\N
+5	Cables y Conectividad	CYC567890	ventas@cablesyconectividad.com	\N	Diego Morales	t	\N	2025-12-04 10:04:59.39147	1	2025-12-04 10:04:59.39147	\N	\N	\N	\N	\N
+\.
+
+
+--
+-- TOC entry 5136 (class 0 OID 17767)
+-- Dependencies: 220
+-- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.users (id, full_name, email, employee_id, department, job_title, role, active, deleted_at, created_at, created_by, updated_at, updated_by) FROM stdin;
+1	Ana López	ana.lopez@empresa.com	EMP001	TI	Jefe de TI	admin	t	\N	2025-12-04 09:59:52.693902	\N	2025-12-04 09:59:52.693902	\N
+2	Carlos Ruiz	carlos.ruiz@empresa.com	EMP002	TI	Tecnico de Soporte	operator	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+3	Maria Gonzalez	maria.gonzalez@empresa.com	EMP003	Recursos Humanos	Analista RRHH	viewer	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+4	Luis Martinez	luis.martinez@empresa.com	EMP004	Contabilidad	Contador	viewer	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+5	Sofia Herrera	sofia.herrera@empresa.com	EMP005	Compras	Comprador	viewer	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+6	Jorge Perez	jorge.perez@empresa.com	EMP006	TI	Ingeniero de Software	operator	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+7	Laura Soto	laura.soto@empresa.com	EMP007	Recursos Humanos	Coordinadora RH	manager	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+8	Miguel Castro	miguel.castro@empresa.com	EMP008	TI	Tecnico de Campo	operator	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+9	Claudia Ramirez	claudia.ramirez@empresa.com	EMP009	Compras	Auxiliar de Compras	viewer	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+10	Diego Morales	diego.morales@empresa.com	EMP010	Contabilidad	Asistente Contable	viewer	t	\N	2025-12-04 10:00:47.975075	1	2025-12-04 10:00:47.975075	\N
+\.
+
+
+--
+-- TOC entry 5181 (class 0 OID 0)
+-- Dependencies: 229
+-- Name: asset_assignments_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.asset_assignments_id_seq', 10, true);
+
+
+--
+-- TOC entry 5182 (class 0 OID 0)
+-- Dependencies: 233
+-- Name: asset_moves_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.asset_moves_id_seq', 10, true);
+
+
+--
+-- TOC entry 5183 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: assets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.assets_id_seq', 10, true);
+
+
+--
+-- TOC entry 5184 (class 0 OID 0)
+-- Dependencies: 235
+-- Name: audit_logs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.audit_logs_id_seq', 90, true);
+
+
+--
+-- TOC entry 5185 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: categories_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.categories_id_seq', 10, true);
+
+
+--
+-- TOC entry 5186 (class 0 OID 0)
+-- Dependencies: 241
+-- Name: consumables_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.consumables_id_seq', 5, true);
+
+
+--
+-- TOC entry 5187 (class 0 OID 0)
+-- Dependencies: 243
+-- Name: documents_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.documents_id_seq', 5, true);
+
+
+--
+-- TOC entry 5188 (class 0 OID 0)
+-- Dependencies: 239
+-- Name: license_assignments_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.license_assignments_id_seq', 5, true);
+
+
+--
+-- TOC entry 5189 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: locations_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.locations_id_seq', 5, true);
+
+
+--
+-- TOC entry 5190 (class 0 OID 0)
+-- Dependencies: 231
+-- Name: maintenance_orders_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.maintenance_orders_id_seq', 10, true);
+
+
+--
+-- TOC entry 5191 (class 0 OID 0)
+-- Dependencies: 237
+-- Name: software_licenses_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.software_licenses_id_seq', 5, true);
+
+
+--
+-- TOC entry 5192 (class 0 OID 0)
+-- Dependencies: 225
+-- Name: suppliers_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.suppliers_id_seq', 5, true);
+
+
+--
+-- TOC entry 5193 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: users_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.users_id_seq', 10, true);
+
+
+--
+-- TOC entry 4918 (class 2606 OID 17974)
+-- Name: asset_assignments asset_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments
+    ADD CONSTRAINT asset_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4924 (class 2606 OID 18057)
+-- Name: asset_moves asset_moves_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4909 (class 2606 OID 17926)
+-- Name: assets assets_asset_tag_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_asset_tag_key UNIQUE (asset_tag);
+
+
+--
+-- TOC entry 4911 (class 2606 OID 17924)
+-- Name: assets assets_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4913 (class 2606 OID 17928)
+-- Name: assets assets_serial_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_serial_number_key UNIQUE (serial_number);
+
+
+--
+-- TOC entry 4926 (class 2606 OID 18098)
+-- Name: audit_logs audit_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4903 (class 2606 OID 17849)
+-- Name: categories categories_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4934 (class 2606 OID 18248)
+-- Name: consumables consumables_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.consumables
+    ADD CONSTRAINT consumables_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4936 (class 2606 OID 18272)
+-- Name: documents documents_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.documents
+    ADD CONSTRAINT documents_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4932 (class 2606 OID 18220)
+-- Name: license_assignments license_assignments_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments
+    ADD CONSTRAINT license_assignments_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4899 (class 2606 OID 17823)
+-- Name: locations locations_code_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_code_key UNIQUE (code);
+
+
+--
+-- TOC entry 4901 (class 2606 OID 17821)
+-- Name: locations locations_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4922 (class 2606 OID 18021)
+-- Name: maintenance_orders maintenance_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders
+    ADD CONSTRAINT maintenance_orders_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4930 (class 2606 OID 18203)
+-- Name: software_licenses software_licenses_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.software_licenses
+    ADD CONSTRAINT software_licenses_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4907 (class 2606 OID 17881)
+-- Name: suppliers suppliers_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suppliers
+    ADD CONSTRAINT suppliers_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4892 (class 2606 OID 17790)
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_email_key UNIQUE (email);
+
+
+--
+-- TOC entry 4894 (class 2606 OID 17792)
+-- Name: users users_employee_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_employee_id_key UNIQUE (employee_id);
+
+
+--
+-- TOC entry 4896 (class 2606 OID 17788)
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4914 (class 1259 OID 18110)
+-- Name: idx_assets_location; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_assets_location ON public.assets USING btree (location_id) WHERE (deleted_at IS NULL);
+
+
+--
+-- TOC entry 4915 (class 1259 OID 18109)
+-- Name: idx_assets_status; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_assets_status ON public.assets USING btree (status) WHERE (deleted_at IS NULL);
+
+
+--
+-- TOC entry 4916 (class 1259 OID 18111)
+-- Name: idx_assets_tag; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_assets_tag ON public.assets USING btree (asset_tag) WHERE (deleted_at IS NULL);
+
+
+--
+-- TOC entry 4919 (class 1259 OID 18112)
+-- Name: idx_assignments_active; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_assignments_active ON public.asset_assignments USING btree (status) WHERE (((status)::text = 'active'::text) AND (deleted_at IS NULL));
+
+
+--
+-- TOC entry 4927 (class 1259 OID 18114)
+-- Name: idx_audit_logs_recent; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_audit_logs_recent ON public.audit_logs USING btree (changed_at DESC);
+
+
+--
+-- TOC entry 4928 (class 1259 OID 18115)
+-- Name: idx_audit_logs_table_record; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_audit_logs_table_record ON public.audit_logs USING btree (table_name, record_id);
+
+
+--
+-- TOC entry 4904 (class 1259 OID 18107)
+-- Name: idx_categories_active; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_categories_active ON public.categories USING btree (active) WHERE ((active = true) AND (deleted_at IS NULL));
+
+
+--
+-- TOC entry 4897 (class 1259 OID 18106)
+-- Name: idx_locations_active; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_locations_active ON public.locations USING btree (active) WHERE ((active = true) AND (deleted_at IS NULL));
+
+
+--
+-- TOC entry 4920 (class 1259 OID 18113)
+-- Name: idx_maintenance_pending; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_maintenance_pending ON public.maintenance_orders USING btree (status) WHERE (((status)::text = ANY ((ARRAY['scheduled'::character varying, 'in_progress'::character varying])::text[])) AND (deleted_at IS NULL));
+
+
+--
+-- TOC entry 4905 (class 1259 OID 18108)
+-- Name: idx_suppliers_active; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_suppliers_active ON public.suppliers USING btree (active) WHERE ((active = true) AND (deleted_at IS NULL));
+
+
+--
+-- TOC entry 4889 (class 1259 OID 18105)
+-- Name: idx_users_email; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_users_email ON public.users USING btree (email) WHERE (deleted_at IS NULL);
+
+
+--
+-- TOC entry 4890 (class 1259 OID 18104)
+-- Name: idx_users_role; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_users_role ON public.users USING btree (role) WHERE (deleted_at IS NULL);
+
+
+--
+-- TOC entry 4981 (class 2620 OID 18122)
+-- Name: asset_assignments trg_audit_asset_assignments; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_asset_assignments AFTER INSERT OR DELETE OR UPDATE ON public.asset_assignments FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4983 (class 2620 OID 18124)
+-- Name: asset_moves trg_audit_asset_moves; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_asset_moves AFTER INSERT OR DELETE OR UPDATE ON public.asset_moves FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4980 (class 2620 OID 18121)
+-- Name: assets trg_audit_assets; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_assets AFTER INSERT OR DELETE OR UPDATE ON public.assets FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4978 (class 2620 OID 18119)
+-- Name: categories trg_audit_categories; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_categories AFTER INSERT OR DELETE OR UPDATE ON public.categories FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4986 (class 2620 OID 18280)
+-- Name: consumables trg_audit_consumables; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_consumables AFTER INSERT OR DELETE OR UPDATE ON public.consumables FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4987 (class 2620 OID 18281)
+-- Name: documents trg_audit_documents; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_documents AFTER INSERT OR DELETE OR UPDATE ON public.documents FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4985 (class 2620 OID 18279)
+-- Name: license_assignments trg_audit_license_assignments; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_license_assignments AFTER INSERT OR DELETE OR UPDATE ON public.license_assignments FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4977 (class 2620 OID 18118)
+-- Name: locations trg_audit_locations; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_locations AFTER INSERT OR DELETE OR UPDATE ON public.locations FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4982 (class 2620 OID 18123)
+-- Name: maintenance_orders trg_audit_maintenance_orders; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_maintenance_orders AFTER INSERT OR DELETE OR UPDATE ON public.maintenance_orders FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4984 (class 2620 OID 18278)
+-- Name: software_licenses trg_audit_software_licenses; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_software_licenses AFTER INSERT OR DELETE OR UPDATE ON public.software_licenses FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4979 (class 2620 OID 18120)
+-- Name: suppliers trg_audit_suppliers; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_suppliers AFTER INSERT OR DELETE OR UPDATE ON public.suppliers FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4976 (class 2620 OID 18117)
+-- Name: users trg_audit_users; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trg_audit_users AFTER INSERT OR DELETE OR UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.audit_trigger_fn();
+
+
+--
+-- TOC entry 4951 (class 2606 OID 17975)
+-- Name: asset_assignments asset_assignments_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments
+    ADD CONSTRAINT asset_assignments_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.assets(id);
+
+
+--
+-- TOC entry 4952 (class 2606 OID 17985)
+-- Name: asset_assignments asset_assignments_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments
+    ADD CONSTRAINT asset_assignments_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4953 (class 2606 OID 17990)
+-- Name: asset_assignments asset_assignments_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments
+    ADD CONSTRAINT asset_assignments_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4954 (class 2606 OID 17980)
+-- Name: asset_assignments asset_assignments_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_assignments
+    ADD CONSTRAINT asset_assignments_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4959 (class 2606 OID 18058)
+-- Name: asset_moves asset_moves_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.assets(id);
+
+
+--
+-- TOC entry 4960 (class 2606 OID 18078)
+-- Name: asset_moves asset_moves_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4961 (class 2606 OID 18063)
+-- Name: asset_moves asset_moves_from_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_from_location_id_fkey FOREIGN KEY (from_location_id) REFERENCES public.locations(id);
+
+
+--
+-- TOC entry 4962 (class 2606 OID 18073)
+-- Name: asset_moves asset_moves_moved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_moved_by_fkey FOREIGN KEY (moved_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4963 (class 2606 OID 18068)
+-- Name: asset_moves asset_moves_to_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.asset_moves
+    ADD CONSTRAINT asset_moves_to_location_id_fkey FOREIGN KEY (to_location_id) REFERENCES public.locations(id);
+
+
+--
+-- TOC entry 4946 (class 2606 OID 17929)
+-- Name: assets assets_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id);
+
+
+--
+-- TOC entry 4947 (class 2606 OID 17944)
+-- Name: assets assets_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4948 (class 2606 OID 17934)
+-- Name: assets assets_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id);
+
+
+--
+-- TOC entry 4949 (class 2606 OID 17939)
+-- Name: assets assets_supplier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_supplier_id_fkey FOREIGN KEY (supplier_id) REFERENCES public.suppliers(id);
+
+
+--
+-- TOC entry 4950 (class 2606 OID 17949)
+-- Name: assets assets_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.assets
+    ADD CONSTRAINT assets_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4964 (class 2606 OID 18099)
+-- Name: audit_logs audit_logs_changed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.audit_logs
+    ADD CONSTRAINT audit_logs_changed_by_fkey FOREIGN KEY (changed_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4941 (class 2606 OID 17855)
+-- Name: categories categories_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4942 (class 2606 OID 17850)
+-- Name: categories categories_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.categories(id);
+
+
+--
+-- TOC entry 4943 (class 2606 OID 17860)
+-- Name: categories categories_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4971 (class 2606 OID 18249)
+-- Name: consumables consumables_category_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.consumables
+    ADD CONSTRAINT consumables_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id);
+
+
+--
+-- TOC entry 4972 (class 2606 OID 18292)
+-- Name: consumables consumables_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.consumables
+    ADD CONSTRAINT consumables_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4973 (class 2606 OID 18254)
+-- Name: consumables consumables_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.consumables
+    ADD CONSTRAINT consumables_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id);
+
+
+--
+-- TOC entry 4974 (class 2606 OID 18297)
+-- Name: documents documents_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.documents
+    ADD CONSTRAINT documents_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4975 (class 2606 OID 18273)
+-- Name: documents documents_uploaded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.documents
+    ADD CONSTRAINT documents_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4967 (class 2606 OID 18226)
+-- Name: license_assignments license_assignments_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments
+    ADD CONSTRAINT license_assignments_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.assets(id);
+
+
+--
+-- TOC entry 4968 (class 2606 OID 18287)
+-- Name: license_assignments license_assignments_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments
+    ADD CONSTRAINT license_assignments_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4969 (class 2606 OID 18221)
+-- Name: license_assignments license_assignments_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments
+    ADD CONSTRAINT license_assignments_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.software_licenses(id);
+
+
+--
+-- TOC entry 4970 (class 2606 OID 18231)
+-- Name: license_assignments license_assignments_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.license_assignments
+    ADD CONSTRAINT license_assignments_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4939 (class 2606 OID 17824)
+-- Name: locations locations_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4940 (class 2606 OID 17829)
+-- Name: locations locations_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.locations
+    ADD CONSTRAINT locations_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4955 (class 2606 OID 18022)
+-- Name: maintenance_orders maintenance_orders_asset_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders
+    ADD CONSTRAINT maintenance_orders_asset_id_fkey FOREIGN KEY (asset_id) REFERENCES public.assets(id);
+
+
+--
+-- TOC entry 4956 (class 2606 OID 18032)
+-- Name: maintenance_orders maintenance_orders_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders
+    ADD CONSTRAINT maintenance_orders_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4957 (class 2606 OID 18027)
+-- Name: maintenance_orders maintenance_orders_technician_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders
+    ADD CONSTRAINT maintenance_orders_technician_id_fkey FOREIGN KEY (technician_id) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4958 (class 2606 OID 18037)
+-- Name: maintenance_orders maintenance_orders_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.maintenance_orders
+    ADD CONSTRAINT maintenance_orders_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4965 (class 2606 OID 18282)
+-- Name: software_licenses software_licenses_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.software_licenses
+    ADD CONSTRAINT software_licenses_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4966 (class 2606 OID 18204)
+-- Name: software_licenses software_licenses_supplier_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.software_licenses
+    ADD CONSTRAINT software_licenses_supplier_id_fkey FOREIGN KEY (supplier_id) REFERENCES public.suppliers(id);
+
+
+--
+-- TOC entry 4944 (class 2606 OID 17882)
+-- Name: suppliers suppliers_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suppliers
+    ADD CONSTRAINT suppliers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4945 (class 2606 OID 17887)
+-- Name: suppliers suppliers_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.suppliers
+    ADD CONSTRAINT suppliers_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4937 (class 2606 OID 17793)
+-- Name: users users_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- TOC entry 4938 (class 2606 OID 17798)
+-- Name: users users_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id);
+
+
+-- Completed on 2025-12-04 12:40:17
+
+--
+-- PostgreSQL database dump complete
+--
+
+\unrestrict mrAWa4UqshVII7cbPYb3Lsd9xcKvgqJ8GBCgcFLs8dq09nbivbgy2txHCDVedf4
+
